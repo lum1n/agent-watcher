@@ -1,6 +1,6 @@
 # agent-watcher
 
-Long-lived classifier for AI coding agents in tmux. Used by [sessh](../sessh) (embedded over SSH) and [tmux-agent-state](../tmux-agent-state) (local statusline / session switcher).
+Long-lived classifier for AI coding agents in tmux. Used by [sessh](https://github.com/lum1n/sessh) (embedded over SSH) and [tmux-agent-state](https://github.com/lum1n/tmux-agent-state) (TPM plugin; pins this repo as a submodule).
 
 Nothing is installed on a remote host — sessh still ships one inlined file. This repo is the source of truth for discover + classify.
 
