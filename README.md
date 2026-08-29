@@ -2,9 +2,9 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Long-lived classifier for AI coding agents in tmux. Used by [sessh](https://github.com/lum1n/sessh) (embedded over SSH) and [tmux-agent-state](https://github.com/lum1n/tmux-agent-state) (TPM plugin; pins this repo as a submodule).
+Long-lived classifier for AI coding agents in tmux. The public consumer is [tmux-agent-state](https://github.com/lum1n/tmux-agent-state) (TPM plugin; pins this repo as a submodule). Other tools can subscribe to the same NDJSON stream on stdout or a Unix socket.
 
-Nothing is installed on a remote host — sessh still ships one inlined file. This repo is the source of truth for discover + classify.
+This repo is the source of truth for discover + classify.
 
 ## States
 
@@ -34,7 +34,7 @@ src/agent_watcher.py
 src/harnesses/{claude,codex,cursor,opencode,pi}.py
 ```
 
-Sessh embeds via `npm run embed:watcher` (reads this tree). After editing, regenerate the embed and run `npm run test:watcher` in sessh.
+Clients can run this tree as-is, embed those files, or attach to `--listen`.
 
 ## License
 
