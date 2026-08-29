@@ -1,0 +1,11 @@
+[project]
+name = "agent-watcher"
+version = "0.1.0"
+description = "Classify tmux AI-agent panes (idle / thinking / tool / needs you / error) as NDJSON."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+py-modules = ["agent_watcher"]
