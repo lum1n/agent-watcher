@@ -35,11 +35,16 @@ def _as_float(raw):
 
 
 def normalize_percent(raw):
-    """Accept 0–1 or 0–100; return 0–100 or None."""
+    """Accept 0–1 or 0–100; return 0–100 or None.
+
+    Values in [0, 1) are treated as fractions. 1.0 stays 1% — Cursor's
+    apiPercentUsed is often ~1.0 on a 0–100 scale, and treating 1.0 as
+    "100% as a fraction" falsely marks the API pool as exhausted.
+    """
     v = _as_float(raw)
     if v is None:
         return None
-    if 0.0 <= v <= 1.0:
+    if 0.0 <= v < 1.0:
         v = v * 100.0
     if v < 0.0:
         v = 0.0
@@ -265,11 +270,16 @@ def _percent_from_display_message(*msgs):
 
 
 def parse_cursor_usage(raw):
-    """Map GetCurrentPeriodUsage → included spend percent (not totalPercentUsed).
+    """Map GetCurrentPeriodUsage → meters that match Cursor's own UI.
 
-    Prefer displayMessage (same string Cursor's Plan & Usage uses). Fall back to
-    includedSpend/limit, with a cents-vs-dollars guard and remaining cross-check.
-    Never use totalPercentUsed — that is a different weighted pool.
+    Cursor exposes two different axes:
+    - displayMessage / includedSpend÷limit — dollar included allotment
+      ("You've hit your usage limit" when spent, even with bonus left)
+    - totalPercentUsed / autoModelSelectedDisplayMessage — "included total
+      usage" (~Auto+API weighted). This is what users usually mean by
+      "my plan is at N%".
+
+    We surface totalPercentUsed as `plan`, plus auto/api when present.
     """
     if not raw or not isinstance(raw, dict):
         return None
@@ -279,53 +289,83 @@ def parse_cursor_usage(raw):
     if not isinstance(plan, dict):
         return None
 
-    included = _as_float(plan.get("includedSpend"))
-    if included is None:
-        included = _as_float(plan.get("included_spend"))
-    remaining = _as_float(plan.get("remaining"))
-    limit = _as_float(plan.get("limit"))
-
-    used_pct = _percent_from_display_message(
-        raw.get("displayMessage"),
-        plan.get("displayMessage"),
+    total = normalize_percent(
+        plan.get("totalPercentUsed")
+        if plan.get("totalPercentUsed") is not None
+        else plan.get("total_percent_used")
     )
+    if total is None:
+        total = _percent_from_display_message(
+            raw.get("autoModelSelectedDisplayMessage"),
+            plan.get("autoModelSelectedDisplayMessage"),
+        )
 
-    if used_pct is None and included is not None and limit is not None and limit > 0:
-        # Guard: included in cents, limit sometimes in whole dollars.
-        adj_limit = limit
-        if included > limit * 50 and limit < 1000:
-            adj_limit = limit * 100.0
-        used_pct = (included / adj_limit) * 100.0
-
-    if used_pct is None and remaining is not None and limit is not None and limit > 0:
-        adj_limit = limit
-        if remaining > limit * 50 and limit < 1000:
-            adj_limit = limit * 100.0
-        used_pct = ((adj_limit - remaining) / adj_limit) * 100.0
-
-    if used_pct is None:
-        return None
-
-    # remaining > 0 means the included bucket is not exhausted — trust it
-    # over a saturating includedSpend/limit ratio (Cursor sometimes omits
-    # consistency between those fields).
-    if remaining is not None and remaining > 0 and used_pct >= 99.5:
-        if limit is not None and limit > remaining:
+    # Fall back to included-allotment axis only when the total pool is absent.
+    if total is None:
+        total = _percent_from_display_message(
+            raw.get("displayMessage"),
+            plan.get("displayMessage"),
+        )
+    if total is None:
+        included = _as_float(plan.get("includedSpend"))
+        if included is None:
+            included = _as_float(plan.get("included_spend"))
+        remaining = _as_float(plan.get("remaining"))
+        limit = _as_float(plan.get("limit"))
+        if included is not None and limit is not None and limit > 0:
+            adj_limit = limit
+            if included > limit * 50 and limit < 1000:
+                adj_limit = limit * 100.0
+            total = normalize_percent((included / adj_limit) * 100.0)
+        elif remaining is not None and limit is not None and limit > 0:
             adj_limit = limit
             if remaining > limit * 50 and limit < 1000:
                 adj_limit = limit * 100.0
-            if adj_limit > remaining:
-                used_pct = ((adj_limit - remaining) / adj_limit) * 100.0
-        elif included is not None and included >= 0:
-            used_pct = (included / (included + remaining)) * 100.0
-        else:
-            used_pct = 99.0
+            total = normalize_percent(((adj_limit - remaining) / adj_limit) * 100.0)
+
+    if total is None:
+        return None
 
     resets = raw.get("billingCycleEnd") or raw.get("billing_cycle_end")
-    w = _window("cycle", "plan", used_pct, resets)
-    if not w:
+    windows = []
+    w = _window("cycle", "plan", total, resets)
+    if w:
+        windows.append(w)
+
+    auto = normalize_percent(
+        plan.get("autoPercentUsed")
+        if plan.get("autoPercentUsed") is not None
+        else plan.get("auto_percent_used")
+    )
+    if auto is None:
+        auto = _percent_from_display_message(
+            raw.get("autoModelSelectedDisplayMessage"),
+        )
+        # Only accept that message when it says "total usage" (auto pool);
+        # ignore if we already used it as plan above and it duplicated.
+    api = normalize_percent(
+        plan.get("apiPercentUsed")
+        if plan.get("apiPercentUsed") is not None
+        else plan.get("api_percent_used")
+    )
+    if api is None:
+        api = _percent_from_display_message(
+            raw.get("namedModelSelectedDisplayMessage"),
+        )
+
+    # Avoid duplicating the plan % when auto equals total and api is tiny.
+    if auto is not None and abs(auto - total) > 0.5:
+        aw = _window("auto", "auto", auto, resets)
+        if aw:
+            windows.append(aw)
+    if api is not None and api > 0.05:
+        iw = _window("api", "api", api, resets)
+        if iw:
+            windows.append(iw)
+
+    if not windows:
         return None
-    out = {"windows": [w]}
+    out = {"windows": windows}
     plan_name = raw.get("planName") or raw.get("plan_name") or raw.get("plan")
     if isinstance(plan_name, str) and plan_name.strip():
         out["plan"] = plan_name.strip()
