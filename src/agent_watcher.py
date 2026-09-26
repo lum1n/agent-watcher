@@ -4,7 +4,7 @@
 Shared package (agent-watcher). Sessh embeds this file over SSH; the local
 tmux plugin runs it in-process. Not installed on the remote disk.
 
-Emits v1 events: hello, snapshot, state, gone, unbound, error.
+Emits v1 events: hello, snapshot, state, gone, unbound, error, quota.
 Accepts stdin control lines: {"cmd":"snapshot"|"ping"|"bind"|"stop"}.
 Optional --listen PATH fans the same events to a 0700 Unix socket.
 """
@@ -783,7 +783,7 @@ def _load_harnesses():
     hdir = os.path.join(here, "harnesses")
     if not os.path.isdir(hdir):
         return
-    for name in ("pi", "claude", "codex", "cursor", "opencode", "copilot"):
+    for name in ("pi", "claude", "codex", "cursor", "opencode", "copilot", "quota"):
         path = os.path.join(hdir, name + ".py")
         if not os.path.isfile(path):
             continue
@@ -858,6 +858,9 @@ _attention_at = {}
 _lock = threading.Lock()
 _snapshot_requested = threading.Event()
 _stop = threading.Event()
+# kind -> last emitted quota fingerprint / payload for stale fallback
+_quota_last = {}
+_next_quota_at = 0.0
 
 
 def agent_key(session, window):
@@ -1379,6 +1382,80 @@ def poll_interval_s():
     return POLL_IDLE_S
 
 
+def bound_quota_kinds():
+    """Subscription agent kinds currently bound on this host."""
+    kinds = set()
+    with _lock:
+        for info in _bound.values():
+            kind = info.get("kind")
+            if kind in QUOTA_KINDS:
+                kinds.add(kind)
+    return kinds
+
+
+def emit_quota_for_kind(kind, force=False):
+    """Probe one vendor usage API; emit only on change (or force/stale)."""
+    global _quota_last
+    payload, err = fetch_quota(kind)
+    now = time.time()
+    if payload:
+        fingerprint = _quota_fingerprint(payload)
+        prev = _quota_last.get(kind) or {}
+        if not force and prev.get("fp") == fingerprint and not prev.get("stale"):
+            _quota_last[kind] = {
+                "fp": fingerprint,
+                "payload": payload,
+                "stale": False,
+                "at": now,
+            }
+            return
+        ev = build_quota_event(kind, payload, stale=False)
+        if not ev:
+            return
+        _quota_last[kind] = {
+            "fp": fingerprint,
+            "payload": payload,
+            "stale": False,
+            "at": now,
+        }
+        emit(ev)
+        return
+
+    # Keep last good reading, marked stale
+    prev = _quota_last.get(kind)
+    if prev and prev.get("payload"):
+        if prev.get("stale") and prev.get("err") == err and not force:
+            return
+        ev = build_quota_event(
+            kind, prev["payload"], stale=True, reason=err or "fetch-failed"
+        )
+        if not ev:
+            return
+        _quota_last[kind] = {
+            "fp": prev.get("fp"),
+            "payload": prev["payload"],
+            "stale": True,
+            "err": err,
+            "at": now,
+        }
+        emit(ev)
+
+
+def poll_quota(force=False):
+    """Slow subscription usage probe for bound Claude/Codex/Cursor agents."""
+    global _next_quota_at
+    kinds = bound_quota_kinds()
+    if not kinds:
+        _next_quota_at = time.time() + QUOTA_INTERVAL_S
+        return
+    for kind in sorted(kinds):
+        try:
+            emit_quota_for_kind(kind, force=force)
+        except Exception as e:
+            emit_error("quota failed", detail=str(e), kind=kind)
+    _next_quota_at = time.time() + QUOTA_INTERVAL_S
+
+
 def poll_bound():
     """Reclassify busy agents every tick. Idle agents skip disk+pane until due."""
     with _lock:
@@ -1812,6 +1889,8 @@ def main(listen_path=None):
 
     next_discover = time.time() + REDISCOVER_S
     next_poll = time.time() + poll_interval_s()
+    global _next_quota_at
+    _next_quota_at = time.time() + 2.0  # first probe shortly after bind
     while not _stop.is_set():
         now = time.time()
         if _snapshot_requested.is_set():
@@ -1825,6 +1904,9 @@ def main(listen_path=None):
             now = time.time()
             next_discover = now + REDISCOVER_S
             next_poll = now + poll_interval_s()
+            # New agents may have appeared — probe soon if due / never probed.
+            if bound_quota_kinds():
+                _next_quota_at = min(_next_quota_at, now + 1.0)
         elif now >= next_discover:
             try:
                 rediscover()
@@ -1837,7 +1919,12 @@ def main(listen_path=None):
             except Exception as e:
                 emit_error("poll failed", detail=str(e))
             next_poll = time.time() + poll_interval_s()
-        wait = min(next_discover, next_poll) - time.time()
+        elif now >= _next_quota_at:
+            try:
+                poll_quota()
+            except Exception as e:
+                emit_error("quota failed", detail=str(e))
+        wait = min(next_discover, next_poll, _next_quota_at) - time.time()
         if wait > 0:
             _snapshot_requested.wait(timeout=wait)
 
@@ -1862,6 +1949,52 @@ if __name__ == "__main__":
         kind = os.environ.get("SESSH_ATTENTION_KIND") or None
         text = sys.stdin.read()
         print(json.dumps({"state": apply_pane_attention(state, text, kind)}))
+        sys.exit(0)
+    if argv and argv[0] == "--quota-parse":
+        # Offline parser: SESSH_QUOTA_KIND=claude SESSH_QUOTA_JSON=/path
+        kind = os.environ.get("SESSH_QUOTA_KIND", "claude")
+        path = os.environ.get("SESSH_QUOTA_JSON", "")
+        try:
+            raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        except Exception as e:
+            print(json.dumps({"error": str(e)}))
+            sys.exit(1)
+        parsers = {
+            "claude": parse_claude_usage,
+            "codex": parse_codex_usage,
+            "cursor": parse_cursor_usage,
+        }
+        fn = parsers.get(kind)
+        if not fn:
+            print(json.dumps({"error": "unsupported-kind"}))
+            sys.exit(1)
+        payload = fn(raw)
+        ev = build_quota_event(kind, payload) if payload else None
+        print(json.dumps(ev if ev else {"error": "parse-failed"}))
+        sys.exit(0)
+    if argv and argv[0] == "--quota-auth":
+        # Offline credential presence (no network). HOME can be redirected.
+        kind = os.environ.get("SESSH_QUOTA_KIND", "claude")
+        if kind == "claude":
+            tok = read_claude_access_token()
+            print(json.dumps({"kind": kind, "hasToken": bool(tok)}))
+        elif kind == "codex":
+            tok, acct = read_codex_auth()
+            print(
+                json.dumps(
+                    {
+                        "kind": kind,
+                        "hasToken": bool(tok),
+                        "hasAccount": bool(acct),
+                    }
+                )
+            )
+        elif kind == "cursor":
+            tok = read_cursor_access_token()
+            print(json.dumps({"kind": kind, "hasToken": bool(tok)}))
+        else:
+            print(json.dumps({"error": "unsupported-kind"}))
+            sys.exit(1)
         sys.exit(0)
     listen_path = None
     if "--listen" in argv:

@@ -25,7 +25,7 @@ python3 src/agent_watcher.py --attention < pane.txt
 
 Stdin / socket control: `{"cmd":"snapshot"}` / `ping` / `bind` / `stop`.
 
-Events: `hello`, `snapshot`, `state`, `gone`, `unbound`, `error`.
+Events: `hello`, `snapshot`, `state`, `gone`, `unbound`, `error`, `quota`.
 
 ## Layout
 
