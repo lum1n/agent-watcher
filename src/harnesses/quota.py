@@ -245,8 +245,32 @@ def parse_codex_usage(raw):
     return out
 
 
+def _percent_from_display_message(*msgs):
+    """Parse 'You've used N% of your included usage' (Cursor's included axis)."""
+    for msg in msgs:
+        if not isinstance(msg, str):
+            continue
+        # Exhausted copy — do not scrape a bogus 100 from other text.
+        low = msg.lower()
+        if "hit your usage limit" in low or "reached your usage limit" in low:
+            return 100.0
+        m = re.search(
+            r"used\s+(\d+(?:\.\d+)?)\s*%\s+of\s+your\s+included",
+            msg,
+            re.I,
+        )
+        if m:
+            return float(m.group(1))
+    return None
+
+
 def parse_cursor_usage(raw):
-    """Map GetCurrentPeriodUsage → included spend percent (not totalPercentUsed)."""
+    """Map GetCurrentPeriodUsage → included spend percent (not totalPercentUsed).
+
+    Prefer displayMessage (same string Cursor's Plan & Usage uses). Fall back to
+    includedSpend/limit, with a cents-vs-dollars guard and remaining cross-check.
+    Never use totalPercentUsed — that is a different weighted pool.
+    """
     if not raw or not isinstance(raw, dict):
         return None
     plan = raw.get("planUsage")
@@ -258,23 +282,47 @@ def parse_cursor_usage(raw):
     included = _as_float(plan.get("includedSpend"))
     if included is None:
         included = _as_float(plan.get("included_spend"))
+    remaining = _as_float(plan.get("remaining"))
     limit = _as_float(plan.get("limit"))
-    used_pct = None
-    if included is not None and limit is not None and limit > 0:
-        used_pct = (included / limit) * 100.0
-    else:
-        # Fall back only when spend fields are absent
-        msg = raw.get("displayMessage") or plan.get("displayMessage")
-        if isinstance(msg, str):
-            m = re.search(r"(\d+(?:\.\d+)?)\s*%", msg)
-            if m:
-                used_pct = float(m.group(1))
+
+    used_pct = _percent_from_display_message(
+        raw.get("displayMessage"),
+        plan.get("displayMessage"),
+    )
+
+    if used_pct is None and included is not None and limit is not None and limit > 0:
+        # Guard: included in cents, limit sometimes in whole dollars.
+        adj_limit = limit
+        if included > limit * 50 and limit < 1000:
+            adj_limit = limit * 100.0
+        used_pct = (included / adj_limit) * 100.0
+
+    if used_pct is None and remaining is not None and limit is not None and limit > 0:
+        adj_limit = limit
+        if remaining > limit * 50 and limit < 1000:
+            adj_limit = limit * 100.0
+        used_pct = ((adj_limit - remaining) / adj_limit) * 100.0
 
     if used_pct is None:
         return None
 
+    # remaining > 0 means the included bucket is not exhausted — trust it
+    # over a saturating includedSpend/limit ratio (Cursor sometimes omits
+    # consistency between those fields).
+    if remaining is not None and remaining > 0 and used_pct >= 99.5:
+        if limit is not None and limit > remaining:
+            adj_limit = limit
+            if remaining > limit * 50 and limit < 1000:
+                adj_limit = limit * 100.0
+            if adj_limit > remaining:
+                used_pct = ((adj_limit - remaining) / adj_limit) * 100.0
+        elif included is not None and included >= 0:
+            used_pct = (included / (included + remaining)) * 100.0
+        else:
+            used_pct = 99.0
+
     resets = raw.get("billingCycleEnd") or raw.get("billing_cycle_end")
-    w = _window("cycle", "cycle", used_pct, resets)
+    w = _window("cycle", "plan", used_pct, resets)
     if not w:
         return None
     out = {"windows": [w]}
