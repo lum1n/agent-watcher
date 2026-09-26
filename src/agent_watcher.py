@@ -505,7 +505,7 @@ def tool_name_from(tool):
 def tool_target_from(inp):
     if not isinstance(inp, dict):
         return ""
-    return (
+    raw = (
         inp.get("command")
         or inp.get("file_path")
         or inp.get("filePath")
@@ -513,6 +513,11 @@ def tool_target_from(inp):
         or inp.get("url")
         or ""
     )
+    if not isinstance(raw, str):
+        raw = str(raw) if raw is not None else ""
+    # Collapse newlines / tags for notification + Live Activity copy; keep
+    # the path/command words that describe the work.
+    return clean_notification_text(raw)
 
 
 SUMMARY_MAX = 80
@@ -529,6 +534,12 @@ _CONTEXT_USER_MARKERS = (
 _USER_QUERY_RE = re.compile(
     r"<user_query>\s*(.*?)\s*</user_query>", re.S | re.I
 )
+_ANSI_CSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_ANSI_OSC_RE = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)")
+_XML_OR_HTML_TAG_RE = re.compile(r"</?[A-Za-z][^>]*>")
+_LITERAL_ESCAPED_WS_RE = re.compile(r"\\[nrt]")
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_EMPTY_ANGLE_BRACKETS_RE = re.compile(r"<\s*>")
 
 
 def text_from_content(content):
@@ -553,6 +564,19 @@ def text_from_content(content):
     return "\n".join(parts)
 
 
+def clean_notification_text(text):
+    """Strip tags / escapes / ANSI so lock-screen copy stays readable."""
+    if not text or not isinstance(text, str):
+        return ""
+    text = _LITERAL_ESCAPED_WS_RE.sub(" ", text)
+    text = _ANSI_CSI_RE.sub("", text)
+    text = _ANSI_OSC_RE.sub("", text)
+    text = _XML_OR_HTML_TAG_RE.sub(" ", text)
+    text = _EMPTY_ANGLE_BRACKETS_RE.sub(" ", text)
+    text = _CONTROL_CHARS_RE.sub("", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def summarize_user_prompt(text):
     """First line of a real user prompt, capped for notification copy."""
     if not text or not isinstance(text, str):
@@ -570,7 +594,7 @@ def summarize_user_prompt(text):
         if line:
             text = line
             break
-    text = re.sub(r"\s+", " ", text).strip()
+    text = clean_notification_text(text)
     if len(text) < 2:
         return None
     if len(text) > SUMMARY_MAX:
@@ -815,12 +839,14 @@ def harness_live_store(kind, session, window):
 
 # ── Watcher loop ─────────────────────────────────────────────────────────
 
-REDISCOVER_S = 5.0
-POLL_BUSY_S = 0.75
-POLL_IDLE_S = 3.0
-ATTENTION_EVERY_S = 5.0
+REDISCOVER_S = 8.0
+# Busy agents still feel responsive at ~1.5s; sub-second capture-pane was
+# the main CPU cost when several panes were thinking/tooling at once.
+POLL_BUSY_S = 1.5
+POLL_IDLE_S = 4.0
+ATTENTION_EVERY_S = 8.0
 # Cursor disk often looks idle while the TUI status line still says working.
-ATTENTION_CURSOR_S = 1.0
+ATTENTION_CURSOR_S = 2.0
 BUSY_STATES = frozenset(("thinking", "running-tool", "waiting-permission"))
 
 # key -> last emitted fingerprint
