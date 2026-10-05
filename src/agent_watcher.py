@@ -324,6 +324,10 @@ def detect_kind(command):
         return "opencode"
     if base == "pi":
         return "pi"
+    if base == "copilot" or "copilot-cli" in low or "/@github/copilot/" in low.replace(
+        "\\", "/"
+    ):
+        return "copilot"
     if (
         base == "cursor-agent"
         or "cursor-agent" in low
@@ -705,7 +709,7 @@ def apply_pane_attention(state, text, kind=None):
 
 
 def apply_default_pane_attention(state, text):
-    """Pi / Claude / Codex / OpenCode: demote stale busy when the prompt is back."""
+    """Pi / Claude / Codex / OpenCode / Copilot: demote stale busy when the prompt is back."""
     if not text:
         return state
     lines = text.splitlines()
@@ -755,7 +759,7 @@ def _load_harnesses():
     hdir = os.path.join(here, "harnesses")
     if not os.path.isdir(hdir):
         return
-    for name in ("pi", "claude", "codex", "cursor", "opencode"):
+    for name in ("pi", "claude", "codex", "cursor", "opencode", "copilot"):
         path = os.path.join(hdir, name + ".py")
         if not os.path.isfile(path):
             continue
@@ -773,6 +777,7 @@ DISCOVER = {
     "codex": discover_codex,
     "cursor": discover_cursor,
     "opencode": discover_opencode,
+    "copilot": discover_copilot,
 }
 
 CLASSIFY = {
@@ -781,6 +786,7 @@ CLASSIFY = {
     "codex": lambda path, sid: classify_codex(path),
     "cursor": lambda path, sid: classify_cursor(path),
     "opencode": lambda path, sid: classify_opencode(path, sid),
+    "copilot": lambda path, sid: classify_copilot(path),
 }
 
 

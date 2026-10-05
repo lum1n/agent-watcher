@@ -10,7 +10,7 @@ This repo is the source of truth for discover + classify.
 
 `idle` · `thinking` · `running-tool` · `waiting-permission` · `errored`
 
-Harnesses: Claude, Codex, OpenCode, Pi, Cursor.
+Harnesses: Claude, Codex, OpenCode, Pi, Cursor, Copilot.
 
 ## Run
 
@@ -31,7 +31,7 @@ Events: `hello`, `snapshot`, `state`, `gone`, `unbound`, `error`.
 
 ```
 src/agent_watcher.py
-src/harnesses/{claude,codex,cursor,opencode,pi}.py
+src/harnesses/{claude,codex,copilot,cursor,opencode,pi}.py
 ```
 
 Clients can run this tree as-is, embed those files, or attach to `--listen`.
