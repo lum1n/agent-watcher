@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Discover and classify GitHub Copilot CLI (`~/.copilot/session-state/*/events.jsonl`).
+
 ## 0.1.0
 
 - Discover and classify Claude, Codex, OpenCode, Pi, and Cursor in tmux.
