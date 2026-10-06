@@ -858,6 +858,11 @@ BUSY_STATES = frozenset(("thinking", "running-tool", "waiting-permission"))
 _last = {}
 # key -> {path, sessionId, kind, session, window, attached, windows, sig}
 _bound = {}
+# key -> consecutive rediscovers where the pane lived but no agent was seen
+_absent = {}
+# Grace before a bound pane whose agent exited gets `gone` (~2 × REDISCOVER_S):
+# rides out one missed scan and phone binds that land just before the agent.
+ABSENT_SCANS_BEFORE_GONE = 2
 # key -> last attention pane check (monotonic)
 _attention_at = {}
 _lock = threading.Lock()
@@ -1358,8 +1363,16 @@ def rediscover():
     with _lock:
         known = list(_bound.keys())
     for key in known:
-        if key in seen or key in live_panes:
+        if key in seen:
+            _absent.pop(key, None)
             continue
+        if key in live_panes:
+            # Pane still open but the agent exited (back at the shell). Without
+            # this the bind stuck forever and the window kept a phantom agent.
+            _absent[key] = _absent.get(key, 0) + 1
+            if _absent[key] < ABSENT_SCANS_BEFORE_GONE:
+                continue
+        _absent.pop(key, None)
         with _lock:
             info = _bound.get(key)
         if info:
@@ -1633,12 +1646,12 @@ def apply_client_bind(msg):
     }
     pane = list_live_pane_keys().get(key) or {}
     target = live.get(key)
-    if target and target.get("kind") != kind:
-        # Stale/wrong window from the phone — ignore rather than poison binds.
+    if not target or target.get("kind") != kind:
+        # No agent of that kind in the pane (scan walks the whole process
+        # tree, so a hidden Cursor `node` is still found). Adopting anyway
+        # resurrected exited agents: the phone re-sends stored binds on every
+        # hello / unbound snapshot, so a shell kept a phantom agent forever.
         return
-    # Pane not in this scan yet (Cursor often hides behind `node` until we
-    # walk descendants) — still adopt the chat bind so the next snapshot
-    # classifies instead of staying unbound.
 
     # Decide reclaim outside the lock (may HTTP-probe other panes).
     to_reclaim = []

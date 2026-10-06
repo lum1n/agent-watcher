@@ -260,14 +260,23 @@ def discover_claude(session, window):
     if jsonl is None and len(files) == 1:
         jsonl = files[0]
 
-    # Last resort: newest recently-touched jsonl under project roots whose
-    # absolute path slug matches cwd — handles odd encodings.
+    # Last resort: newest recently-touched jsonl under project dirs whose
+    # name matches cwd once both are squashed to alnum — handles odd
+    # encodings. Never other projects: that bound idle shells to whichever
+    # Claude session elsewhere was busiest and mirrored its state.
+    def squash(text):
+        return re.sub(r"[^a-z0-9]+", "", text.lower())
+
     if jsonl is None and cwd:
+        want = squash(cwd)
         candidates = []
         for root in project_roots:
             if not root.is_dir():
                 continue
             for f in root.rglob("*.jsonl"):
+                proj = f.parent.parent if f.parent.name == "sessions" else f.parent
+                if proj.parent != root or squash(proj.name) != want:
+                    continue
                 # skip subagent transcripts nested under sessions/
                 if "subagent" in f.name.lower():
                     continue
