@@ -311,31 +311,36 @@ def read_proc_environ(pid):
 # ── Agent kind detection (mirrors src/agents/detect.ts) ──────────────────
 
 def detect_kind(command):
+    """Match agent CLIs, including mid-argv under bwrap/sandbox wrappers."""
     if not command:
         return None
     c = command.strip()
-    base = Path(c.split()[0]).name.lower() if c.split() else ""
     low = c.lower()
-    if base == "claude" or "claude-code" in low:
+    if "cursor-agent" in low or "anysphere" in low:
+        return "cursor"
+    if "claude-code" in low:
         return "claude"
-    if base == "codex":
+    bases = set()
+    for tok in c.split():
+        if not tok or tok.startswith("-"):
+            continue
+        base = Path(tok).name.lower()
+        if base:
+            bases.add(base)
+    if "claude" in bases:
+        return "claude"
+    if "codex" in bases:
         return "codex"
-    if base in ("opencode", "open-code"):
+    if "opencode" in bases or "open-code" in bases:
         return "opencode"
-    if base == "pi":
+    if "pi" in bases:
         return "pi"
-    if base == "copilot" or "copilot-cli" in low or "/@github/copilot/" in low.replace(
+    if "copilot" in bases or "copilot-cli" in low or "/@github/copilot/" in low.replace(
         "\\", "/"
     ):
         return "copilot"
-    if (
-        base == "cursor-agent"
-        or "cursor-agent" in low
-        or "anysphere" in low
-        or (base == "agent" and "cursor" in low)
-    ):
-        return "cursor"
-    if base == "agent":
+    # Cursor's `agent` symlink — basename only, so bare flag text cannot match.
+    if "cursor-agent" in bases or "agent" in bases:
         return "cursor"
     return None
 
@@ -1977,7 +1982,11 @@ if __name__ == "__main__":
         kind = os.environ.get("SESSH_QUOTA_KIND", "claude")
         if kind == "claude":
             tok = read_claude_access_token()
-            print(json.dumps({"kind": kind, "hasToken": bool(tok)}))
+            print(
+                json.dumps(
+                    {"kind": kind, "hasToken": bool(tok), "plan": read_claude_plan()}
+                )
+            )
         elif kind == "codex":
             tok, acct = read_codex_auth()
             print(

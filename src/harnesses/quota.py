@@ -7,6 +7,8 @@ Emits normalized `quota` payloads (percents + resets) — never tokens.
 import json
 import os
 import re
+import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -129,6 +131,34 @@ def _window_label_from_secs(secs):
 # ── Parsers (pure; fixture-tested) ───────────────────────────────────────
 
 
+def _claude_scope_name(scope):
+    """limits[].scope → 'Fable' / surface name for model-scoped weekly caps."""
+    if not isinstance(scope, dict):
+        return ""
+    for key in ("model", "surface"):
+        part = scope.get(key)
+        if isinstance(part, dict):
+            name = part.get("display_name") or part.get("name") or part.get("id")
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+        elif isinstance(part, str) and part.strip():
+            return part.strip()
+    return ""
+
+
+def claude_plan_label(subscription, tier):
+    """('max', 'default_claude_max_5x') → 'Max 5x'. Neither is secret."""
+    sub = subscription.strip().lower() if isinstance(subscription, str) else ""
+    tier = tier.strip().lower() if isinstance(tier, str) else ""
+    if not sub:
+        return None
+    label = sub.capitalize()
+    m = re.search(r"(\d+x)$", tier)
+    if m:
+        label += " " + m.group(1)
+    return label
+
+
 def parse_claude_usage(raw):
     """Map Anthropic oauth/usage JSON → quota payload or None."""
     if not raw or not isinstance(raw, dict):
@@ -139,13 +169,19 @@ def parse_claude_usage(raw):
         for entry in limits:
             if not isinstance(entry, dict):
                 continue
-            kind = str(entry.get("type") or entry.get("id") or "").strip().lower()
+            kind = (
+                str(entry.get("kind") or entry.get("type") or entry.get("id") or "")
+                .strip()
+                .lower()
+            )
             name = str(entry.get("display_name") or entry.get("name") or "").strip()
-            util = entry.get("utilization")
-            if util is None:
-                util = entry.get("used_percent")
-            if util is None:
-                util = entry.get("usedPercent")
+            if not name:
+                name = _claude_scope_name(entry.get("scope"))
+            util = None
+            for key in ("percent", "utilization", "used_percent", "usedPercent"):
+                if entry.get(key) is not None:
+                    util = entry.get(key)
+                    break
             resets = (
                 entry.get("resets_at")
                 or entry.get("resetsAt")
@@ -156,7 +192,8 @@ def parse_claude_usage(raw):
             elif kind in ("weekly_all", "seven_day", "seven-day", "7d", "week"):
                 wid, label = "week", name or "7d"
             elif kind in ("weekly_scoped", "seven_day_opus", "seven_day_sonnet"):
-                wid = "week-" + (kind.replace("weekly_scoped", "model")[:24] or "model")
+                slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+                wid = "week-" + (slug or kind.replace("weekly_scoped", "model"))[:24]
                 label = name or "model"
             else:
                 wid = kind or "limit"
@@ -382,23 +419,61 @@ def _claude_config_dir():
     return Path.home() / ".claude"
 
 
-def read_claude_access_token():
+def _claude_credentials():
+    """Parsed Claude Code credentials: ~/.claude file, else macOS Keychain."""
     path = _claude_config_dir() / ".credentials.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data
     except Exception:
+        pass
+    if sys.platform != "darwin":
         return None
+    # macOS Claude Code keeps credentials in the login keychain, not on disk
+    try:
+        out = subprocess.run(
+            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            data = json.loads(out.stdout.strip())
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return None
+
+
+def _claude_oauth_block(data):
     if not isinstance(data, dict):
-        return None
+        return {}
     oauth = data.get("claudeAiOauth") or data.get("claude_ai_oauth") or {}
-    if isinstance(oauth, dict):
-        tok = oauth.get("accessToken") or oauth.get("access_token")
-        if isinstance(tok, str) and tok.strip():
-            return tok.strip()
-    tok = data.get("accessToken") or data.get("access_token")
+    return oauth if isinstance(oauth, dict) else {}
+
+
+def read_claude_access_token():
+    data = _claude_credentials()
+    oauth = _claude_oauth_block(data)
+    tok = oauth.get("accessToken") or oauth.get("access_token")
     if isinstance(tok, str) and tok.strip():
         return tok.strip()
-    return None
+    if isinstance(data, dict):
+        tok = data.get("accessToken") or data.get("access_token")
+        if isinstance(tok, str) and tok.strip():
+            return tok.strip()
+    tok = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+    return tok or None
+
+
+def read_claude_plan():
+    oauth = _claude_oauth_block(_claude_credentials())
+    return claude_plan_label(
+        oauth.get("subscriptionType") or oauth.get("subscription_type"),
+        oauth.get("rateLimitTier") or oauth.get("rate_limit_tier"),
+    )
 
 
 def _codex_home():
@@ -522,6 +597,10 @@ def fetch_claude_usage():
     parsed = parse_claude_usage(body)
     if not parsed:
         return None, "parse-failed"
+    if not parsed.get("plan"):
+        plan = read_claude_plan()
+        if plan:
+            parsed["plan"] = plan
     return parsed, None
 
 

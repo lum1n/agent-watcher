@@ -88,6 +88,47 @@ def classify_claude(path):
         result["summary"] = summary
     return result
 
+def claude_child_pids(proc_pids):
+    """Descendants of the innermost Claude CLI process(es) in proc_pids."""
+    children = process_children_map()
+    out, seen = [], set()
+    for p in proc_pids:
+        cmd = read_cmdline(p)
+        argv0 = Path(cmd.split(" ", 1)[0]).name.lower()
+        # Native binary, or an npm install run through node/bun.
+        if argv0 != "claude" and not (
+            argv0 in ("node", "bun") and detect_kind(cmd) == "claude"
+        ):
+            continue
+        for c in list_descendant_pids(p, children)[1:]:
+            if c not in seen:
+                seen.add(c)
+                out.append(c)
+    return out
+
+
+# Claude keeps its `❯` composer on screen mid-turn, so the shared idle-prompt
+# demotion would always flip a working Claude to idle. The footer carries
+# `esc to interrupt` only while a turn is in flight.
+CLAUDE_BUSY_RE = re.compile(r"(?i)\besc to interrupt\b")
+
+
+def apply_claude_pane_attention(state, text):
+    if not text:
+        return state
+    lines = text.splitlines()
+    if PERMISSION_RE.search(live_permission_region(lines)):
+        return "waiting-permission"
+    if state in ("thinking", "running-tool") and CLAUDE_BUSY_RE.search(
+        "\n".join(lines[-6:])
+    ):
+        return state
+    return apply_default_pane_attention(state, text)
+
+
+HARNESS_PANE_ATTENTION["claude"] = apply_claude_pane_attention
+
+
 def discover_claude(session, window):
     home = Path.home()
     # Claude has used both roots; keep both.
@@ -152,6 +193,11 @@ def discover_claude(session, window):
             m = re.search(r"--resume(?:\s+|=)([0-9a-fA-F-]{36})", cmd)
             if m:
                 return m.group(1).strip()
+        # Claude exports its session id to the processes it spawns (MCP
+        # servers, tool shells). Only trust those: the pane shell, a bwrap
+        # wrapper or claude itself may have inherited a *parent* Claude's id
+        # when tmux or the agent was launched from inside another session.
+        for p in claude_child_pids(proc_pids):
             env = read_proc_environ(p)
             for key in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID"):
                 val = (env.get(key) or "").strip()
