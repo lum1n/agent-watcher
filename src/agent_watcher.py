@@ -1905,6 +1905,9 @@ def socket_client_loop(conn):
                 )
                 if action == "disconnect":
                     return
+    except OSError:
+        # The client left mid-send (e.g. a short-lived probe); nothing to report.
+        pass
     finally:
         _drop_client(conn)
 
