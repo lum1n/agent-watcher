@@ -1802,6 +1802,24 @@ def _drop_client(conn):
         pass
 
 
+def replay_quota(conn):
+    """Send the last quota reading per kind to one new socket subscriber.
+
+    Quota is emitted only on change, so late subscribers would otherwise
+    wait for the next change. Stdout consumers are unaffected.
+    """
+    for kind in sorted(_quota_last):
+        prev = _quota_last[kind]
+        ev = build_quota_event(
+            kind,
+            prev.get("payload"),
+            stale=bool(prev.get("stale")),
+            reason=prev.get("err") or "fetch-failed",
+        )
+        if ev:
+            send_one(conn, ev)
+
+
 def socket_client_loop(conn):
     try:
         send_one(
@@ -1814,8 +1832,11 @@ def socket_client_loop(conn):
             },
         )
         _snapshot_requested.set()
-        with _clients_lock:
-            _clients.append(conn)
+        # Under _emit_lock so a concurrent emit lands after the replay.
+        with _emit_lock:
+            replay_quota(conn)
+            with _clients_lock:
+                _clients.append(conn)
         buf = b""
         while not _stop.is_set():
             if hasattr(select, "select"):

@@ -20,3 +20,5 @@ jobs:
         run: python3 scripts/test_listen.py
       - name: copilot classify
         run: python3 scripts/test_copilot_classify.py
+      - name: quota replay
+        run: python3 scripts/test_quota_replay.py
