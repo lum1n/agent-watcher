@@ -871,6 +871,8 @@ _stop = threading.Event()
 # kind -> last emitted quota fingerprint / payload for stale fallback
 _quota_last = {}
 _next_quota_at = 0.0
+# --no-quota: never read agent credentials or contact vendor usage APIs.
+QUOTA_ENABLED = True
 
 
 def agent_key(session, window):
@@ -1462,7 +1464,7 @@ def emit_quota_for_kind(kind, force=False):
 def poll_quota(force=False):
     """Slow subscription usage probe for bound Claude/Codex/Cursor agents."""
     global _next_quota_at
-    kinds = bound_quota_kinds()
+    kinds = bound_quota_kinds() if QUOTA_ENABLED else set()
     if not kinds:
         _next_quota_at = time.time() + QUOTA_INTERVAL_S
         return
@@ -2039,6 +2041,8 @@ if __name__ == "__main__":
             print(json.dumps({"error": "unsupported-kind"}))
             sys.exit(1)
         sys.exit(0)
+    if "--no-quota" in argv:
+        QUOTA_ENABLED = False
     listen_path = None
     if "--listen" in argv:
         i = argv.index("--listen")

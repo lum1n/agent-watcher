@@ -27,7 +27,8 @@ Stdin / socket control: `{"cmd":"snapshot"}` / `ping` / `bind` / `stop`.
 
 Events: `hello`, `snapshot`, `state`, `gone`, `unbound`, `error`, `quota`.
 
-`quota` is emitted on change. A new `--listen` socket subscriber also gets the
+`quota` is emitted on change. `--no-quota` disables the usage probes entirely:
+no credential reads and no vendor API requests. A new `--listen` socket subscriber also gets the
 last reading per kind right after `hello`; stdout output is unchanged.
 
 ## Layout

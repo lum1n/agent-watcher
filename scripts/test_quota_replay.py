@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""New socket subscribers get the last quota reading; nothing goes to stdout."""
+"""Quota replay to new socket subscribers, and the --no-quota opt-out."""
 from __future__ import annotations
 
 import importlib.util
@@ -67,6 +67,17 @@ def main() -> int:
     mod.replay_quota(a)
     a.close()
     ok("no readings, no replay", read_lines(b) == [])
+
+    probed = []
+    mod.fetch_quota = lambda kind: probed.append(kind) or (None, "test")
+    with mod._lock:
+        mod._bound["dev:0"] = {"kind": "claude"}
+    mod.QUOTA_ENABLED = False
+    mod.poll_quota(force=True)
+    ok("--no-quota never probes", probed == [])
+    mod.QUOTA_ENABLED = True
+    mod.poll_quota(force=True)
+    ok("quota probes by default", probed == ["claude"])
     return 1 if failed else 0
 
 
