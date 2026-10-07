@@ -47,10 +47,51 @@ def _broadcast(line):
         _clients[:] = live
 
 
+# Last snapshot plus every state/unbound/gone since, keyed (session, window).
+# None until the first snapshot. Lets socket clients get an immediate answer.
+_current = None
+_ROW_KEYS = ("session", "window", "kind", "attached", "windows", "path", "state",
+             "toolName", "toolTarget", "summary")
+
+
+def _track(obj):
+    """Keep _current in step with what was just emitted (caller holds _emit_lock)."""
+    global _current
+    typ = obj.get("type")
+    if typ == "snapshot":
+        _current = {
+            (row.get("session"), row.get("window")): row
+            for row in obj.get("agents") or [] if isinstance(row, dict)
+        }
+    elif _current is None:
+        return
+    elif typ == "state":
+        _current[(obj.get("session"), obj.get("window"))] = {
+            k: obj[k] for k in _ROW_KEYS if obj.get(k) is not None
+        }
+    elif typ == "unbound":
+        row = {k: obj[k] for k in _ROW_KEYS[:5] if obj.get(k) is not None}
+        row["unbound"] = True
+        _current[(obj.get("session"), obj.get("window"))] = row
+    elif typ == "gone":
+        _current.pop((obj.get("session"), obj.get("window")), None)
+
+
+def reply_current(conn):
+    """Answer one socket client's snapshot request from current state, if known."""
+    with _emit_lock:
+        if _current is None:
+            return False
+        send_one(conn, {"type": "snapshot", "agents": list(_current.values()),
+                        "ts": int(time.time()), "cached": True})
+    return True
+
+
 def emit(obj):
     obj.setdefault("v", 1)
     line = json.dumps(obj, separators=(",", ":")) + "\n"
     with _emit_lock:
+        _track(obj)
         sys.stdout.write(line)
         sys.stdout.flush()
         _broadcast(line)
@@ -1741,7 +1782,7 @@ def apply_client_bind(msg):
     emit_state(info, result, path)
 
 
-def handle_control_line(line, source="stdin"):
+def handle_control_line(line, source="stdin", conn=None):
     """Apply one control JSON object.
 
     Returns \"halt\" to stop the watcher, \"disconnect\" to drop a socket
@@ -1756,6 +1797,11 @@ def handle_control_line(line, source="stdin"):
         return None
     cmd = msg.get("cmd")
     if cmd == "snapshot":
+        # A socket client gets current state at once instead of waiting behind
+        # the main loop's rescan (short-lived probes such as Hive time out).
+        # The rescan still runs and its fresh snapshot follows to everyone.
+        if source == "socket" and conn is not None:
+            reply_current(conn)
         _snapshot_requested.set()
     elif cmd == "ping":
         emit({"type": "hello", "pong": True, "ts": int(time.time())})
@@ -1855,7 +1901,7 @@ def socket_client_loop(conn):
             while b"\n" in buf:
                 raw, buf = buf.split(b"\n", 1)
                 action = handle_control_line(
-                    raw.decode("utf-8", "ignore"), source="socket"
+                    raw.decode("utf-8", "ignore"), source="socket", conn=conn
                 )
                 if action == "disconnect":
                     return

@@ -22,3 +22,5 @@ jobs:
         run: python3 scripts/test_copilot_classify.py
       - name: quota replay
         run: python3 scripts/test_quota_replay.py
+      - name: socket snapshot
+        run: python3 scripts/test_socket_snapshot.py

@@ -31,6 +31,10 @@ Events: `hello`, `snapshot`, `state`, `gone`, `unbound`, `error`, `quota`.
 no credential reads and no vendor API requests. A new `--listen` socket subscriber also gets the
 last reading per kind right after `hello`; stdout output is unchanged.
 
+A `{"cmd":"snapshot"}` sent on the socket is answered immediately with the
+current state (last snapshot plus later events, marked `"cached": true`) to that
+client; the usual full rescan still runs and its snapshot follows to everyone.
+
 ## Layout
 
 ```
