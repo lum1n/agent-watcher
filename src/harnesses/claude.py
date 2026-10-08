@@ -111,6 +111,17 @@ def claude_child_pids(proc_pids):
 # demotion would always flip a working Claude to idle. The footer carries
 # `esc to interrupt` only while a turn is in flight.
 CLAUDE_BUSY_RE = re.compile(r"(?i)\besc to interrupt\b")
+# On narrow panes (phone clients) footer hints push `esc to interrupt` past
+# the edge (`… · es…`). The spinner line above the composer survives:
+# `✽ Shimmying… (58s · ↓ 5.0k tokens)`. A finished turn reads
+# `✻ Cooked for 1m 2s` — no ellipsis, no parenthesised timer.
+CLAUDE_SPINNER_RE = re.compile(r"^\s*[·✢✳✶✻✽*]\s+\S+…\s*\(\d")
+
+
+def claude_pane_busy(lines):
+    if CLAUDE_BUSY_RE.search("\n".join(lines[-6:])):
+        return True
+    return any(CLAUDE_SPINNER_RE.match(line) for line in lines[-12:])
 
 
 def apply_claude_pane_attention(state, text):
@@ -119,9 +130,7 @@ def apply_claude_pane_attention(state, text):
     lines = text.splitlines()
     if PERMISSION_RE.search(live_permission_region(lines)):
         return "waiting-permission"
-    if state in ("thinking", "running-tool") and CLAUDE_BUSY_RE.search(
-        "\n".join(lines[-6:])
-    ):
+    if state in ("thinking", "running-tool") and claude_pane_busy(lines):
         return state
     return apply_default_pane_attention(state, text)
 

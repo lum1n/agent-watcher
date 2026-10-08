@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Discover and classify GitHub Copilot CLI (`~/.copilot/session-state/*/events.jsonl`).
+- Keep Claude busy on narrow panes where the footer cuts off `esc to interrupt`.
 
 ## 0.1.0
 
