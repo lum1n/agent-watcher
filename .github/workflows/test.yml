@@ -24,3 +24,11 @@ jobs:
         run: python3 scripts/test_quota_replay.py
       - name: socket snapshot
         run: python3 scripts/test_socket_snapshot.py
+      - name: claude pane
+        run: python3 scripts/test_claude_pane.py
+      - name: detect kind
+        run: python3 scripts/test_detect_kind.py
+      - name: claude quota
+        run: python3 scripts/test_claude_quota.py
+      - name: phantom agents
+        run: python3 scripts/test_phantom_agents.py
