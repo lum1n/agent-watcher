@@ -40,6 +40,7 @@ client; the usual full rescan still runs and its snapshot follows to everyone.
 ```
 src/agent_watcher.py
 src/harnesses/{claude,codex,copilot,cursor,opencode,pi}.py
+src/harnesses/quota.py
 ```
 
 Clients can run this tree as-is, embed those files, or attach to `--listen`.
